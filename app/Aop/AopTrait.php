@@ -14,6 +14,10 @@ trait AopTrait
      */
     public function __proxyCall(\Closure $closure, string $method, array $params)
     {
-        return $closure(...$params);
+        $res = $closure(...$params);
+        if (is_string($res)) {
+            $res .= '!';
+        }
+        return $res;
     }
 }

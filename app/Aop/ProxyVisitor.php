@@ -2,7 +2,6 @@
 namespace App\Aop;
 
 use PhpParser\NodeVisitorAbstract;
-use PhpParser\Comment\Doc;
 use PhpParser\Node;
 use PhpParser\Node\Expr\Closure;
 use PhpParser\Node\Expr\FuncCall;
@@ -12,7 +11,6 @@ use PhpParser\Node\Name;
 use PhpParser\Node\Param;
 use PhpParser\Node\Scalar\String_;
 use PhpParser\Node\Stmt\Class_;
-use PhpParser\Node\Stmt\Use_;
 use PhpParser\Node\Stmt\ClassMethod;
 use PhpParser\Node\Stmt\Return_;
 use PhpParser\Node\Stmt\TraitUse;
@@ -30,9 +28,6 @@ class ProxyVisitor extends NodeVisitorAbstract
         $this->proxyId = $proxyId;
     }
 
-    /**
-     * @return string
-     */
     public function getProxyClassName(): string
     {
         return \basename(str_replace('\\', '/', $this->className)) . '_' . $this->proxyId;
@@ -44,26 +39,16 @@ class ProxyVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Called when leaving a node.
-     * Return value semantics:
-     *  * null
-     *        => $node stays as-is
-     *  * NodeTraverser::REMOVE_NODE
-     *        => $node is removed from the parent array
-     *  * NodeTraverser::STOP_TRAVERSAL
-     *        => Traversal is aborted. $node stays as-is
-     *  * array (of Nodes)
-     *        => The return value is merged into the parent array (at the position of the $node)
-     *  * otherwise
-     *        => $node is set to the return value
-     *
-     * @param Node $node Node
-     * @return null|int|Node|Node[] Replacement node (or special return value)
+     * @return \PhpParser\Node\Stmt\TraitUse
      */
+    private function getAopTraitUseNode(): TraitUse
+    {
+        // Use AopTrait trait use node
+        return new TraitUse([new Name('\App\Aop\AopTrait')]);
+    }
+
     public function leaveNode(Node $node)
     {
-        // Clear all comment
-        $node->getDocComment() && $node->setDocComment(new Doc(''));
         // Proxy Class
         if ($node instanceof Class_) {
             // Create proxy class base on parent class
@@ -76,9 +61,6 @@ class ProxyVisitor extends NodeVisitorAbstract
         // Rewrite public and protected methods, without static methods
         if ($node instanceof ClassMethod && !$node->isStatic() && ($node->isPublic() || $node->isProtected())) {
             $methodName = $node->name->toString();
-            if ($methodName === 'getOriginalClassName') {
-                return;
-            }
             // Rebuild closure uses, only variable
             $uses = [];
             foreach ($node->params as $key => $param) {
@@ -111,11 +93,28 @@ class ProxyVisitor extends NodeVisitorAbstract
                 'stmts' => $stmts,
             ]);
         }
-        if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Name && $node->class->toString() === 'parent') {
-            $parentClass = $this->getParentClassFullName();
-            if ($parentClass) {
-                return new Node\Expr\StaticCall(new Name($parentClass), $node->name, $node->args, $node->getAttributes());
+    }
+
+    public function afterTraverse(array $nodes)
+    {
+        $addEnhancementMethods = true;
+        $nodeFinder = new NodeFinder();
+        $nodeFinder->find($nodes, function (Node $node) use (
+            &$addEnhancementMethods
+        ) {
+            if ($node instanceof TraitUse) {
+                foreach ($node->traits as $trait) {
+                    // Did AopTrait trait use ?
+                    if ($trait instanceof Name && $trait->toString() === '\App\Aop\AopTrait') {
+                        $addEnhancementMethods = false;
+                        break;
+                    }
+                }
             }
-        }
+        });
+        // Find Class Node and then Add Aop Enhancement Methods nodes and getOriginalClassName() method
+        $classNode = $nodeFinder->findFirstInstanceOf($nodes, Class_::class);
+        $addEnhancementMethods && array_unshift($classNode->stmts, $this->getAopTraitUseNode());
+        return $nodes;
     }
 }
